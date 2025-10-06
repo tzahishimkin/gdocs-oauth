@@ -41,7 +41,7 @@ app.get("/", (req, res) => {
 });
 
 // ✅ SSE endpoint for the actual MCP connection
-app.get("/sse", (req, res) => {
+app.get("/sse", async (req, res) => {
   const mcp = new Server(
     { name: "google-docs-writer", version: "1.0.0" },
     { capabilities: { tools: {} } }
@@ -96,8 +96,8 @@ app.get("/sse", (req, res) => {
     throw new Error(`Unknown tool: ${request.params.name}`);
   });
 
-  const transport = new SSEServerTransport("/sse", res);
-  mcp.connect(transport);
+  const transport = new SSEServerTransport({ res });
+  await mcp.connect(transport);
 });
 
 app.listen(PORT, () => {
