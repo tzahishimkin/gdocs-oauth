@@ -52,7 +52,21 @@ app.get("/", (req, res) => {
 const createServer = () => {
   const mcp = new Server(
     { name: "google-docs-writer", version: "1.0.0" },
-    { capabilities: { tools: {} } }
+    {
+      capabilities: {
+        tools: {},
+        authentication: {
+          type: "oauth",
+          authorization_url: "https://accounts.google.com/o/oauth2/v2/auth",
+          token_url: "https://oauth2.googleapis.com/token",
+          client_id: GOOGLE_CLIENT_ID,
+          scopes: [
+            "https://www.googleapis.com/auth/documents",
+            "https://www.googleapis.com/auth/drive.file",
+          ],
+        },
+      },
+    }
   );
 
   // Register tool handlers
@@ -106,6 +120,24 @@ const createServer = () => {
 
   return mcp;
 };
+
+// ✅ OPTIONS endpoint for OAuth discovery at /sse
+app.options("/sse", (req, res) => {
+  res.json({
+    name: "google-docs-writer",
+    version: "1.0.0",
+    authentication: {
+      type: "oauth",
+      authorization_url: "https://accounts.google.com/o/oauth2/v2/auth",
+      token_url: "https://oauth2.googleapis.com/token",
+      client_id: GOOGLE_CLIENT_ID,
+      scopes: [
+        "https://www.googleapis.com/auth/documents",
+        "https://www.googleapis.com/auth/drive.file",
+      ],
+    },
+  });
+});
 
 // ✅ SSE endpoint - establishes the stream
 app.get("/sse", async (req, res) => {
