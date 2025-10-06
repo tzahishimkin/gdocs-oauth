@@ -7,7 +7,7 @@ const {
   GOOGLE_CLIENT_ID,
   GOOGLE_CLIENT_SECRET,
   GOOGLE_REFRESH_TOKEN,
-  PORT = 8080, // ✅ Railway uses dynamic port, default to 8080
+  PORT = 8080,
 } = process.env;
 
 if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET || !GOOGLE_REFRESH_TOKEN) {
@@ -23,7 +23,7 @@ const docs = google.docs({ version: "v1", auth: oauth2Client });
 // ✅ Express setup
 const app = express();
 
-// Health check route
+// Health check
 app.get("/", (req, res) => {
   res.send("✅ MCP Proxy is running and ready!");
 });
@@ -35,7 +35,15 @@ app.get("/sse", (req, res) => {
     {
       capabilities: {
         authentication: {
-          methods: ["oauth"], // ✅ This signals OAuth support
+          methods: ["oauth"],
+          oauth: {
+            authorization_url: "https://accounts.google.com/o/oauth2/v2/auth",
+            token_url: "https://oauth2.googleapis.com/token",
+            scopes: [
+              "https://www.googleapis.com/auth/documents",
+              "https://www.googleapis.com/auth/drive.file",
+            ],
+          },
         },
         tools: {
           append_text_to_doc: {
@@ -70,12 +78,10 @@ app.get("/sse", (req, res) => {
     }
   );
 
-  // ✅ Properly connect the SSE transport to Express
   const transport = new SSEServerTransport({ req, res });
   mcp.connect(transport);
 });
 
-// ✅ Start the server
 app.listen(PORT, () => {
   console.log(`🚀 MCP Proxy running on http://localhost:${PORT}/sse`);
 });
