@@ -2,6 +2,10 @@ import express from "express";
 import { google } from "googleapis";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import {
+  ListToolsRequestSchema,
+  CallToolRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js";
 
 const {
   GOOGLE_CLIENT_ID,
@@ -44,6 +48,65 @@ app.get("/", (req, res) => {
   });
 });
 
+// Create MCP server instance (reusable function)
+const createServer = () => {
+  const mcp = new Server(
+    { name: "google-docs-writer", version: "1.0.0" },
+    { capabilities: { tools: {} } }
+  );
+
+  // Register tool handlers
+  mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
+      tools: [
+        {
+          name: "append_text_to_doc",
+          description: "Append text to a Google Doc",
+          inputSchema: {
+            type: "object",
+            properties: {
+              docId: { type: "string", description: "The Google Doc ID" },
+              content: { type: "string", description: "The text to append" },
+            },
+            required: ["docId", "content"],
+          },
+        },
+      ],
+    }));
+
+  mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
+    if (request.params.name === "append_text_to_doc") {
+      const { docId, content } = request.params.arguments;
+
+      await docs.documents.batchUpdate({
+        documentId: docId,
+        requestBody: {
+          requests: [
+            {
+              insertText: {
+                text: content,
+                endOfSegmentLocation: {},
+              },
+            },
+          ],
+        },
+      });
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: "✅ Text appended successfully to document.",
+          },
+        ],
+      };
+    }
+
+    throw new Error(`Unknown tool: ${request.params.name}`);
+  });
+
+  return mcp;
+};
+
 // ✅ SSE endpoint - establishes the stream
 app.get("/sse", async (req, res) => {
   console.log("📡 Establishing SSE connection");
@@ -62,62 +125,8 @@ app.get("/sse", async (req, res) => {
       delete transports[sessionId];
     };
 
-    // Create MCP server instance
-    const mcp = new Server(
-      { name: "google-docs-writer", version: "1.0.0" },
-      { capabilities: { tools: {} } }
-    );
-
-    // Register tool handlers
-    mcp.setRequestHandler("tools/list", async () => ({
-      tools: [
-        {
-          name: "append_text_to_doc",
-          description: "Append text to a Google Doc",
-          inputSchema: {
-            type: "object",
-            properties: {
-              docId: { type: "string", description: "The Google Doc ID" },
-              content: { type: "string", description: "The text to append" },
-            },
-            required: ["docId", "content"],
-          },
-        },
-      ],
-    }));
-
-    mcp.setRequestHandler("tools/call", async (request) => {
-      if (request.params.name === "append_text_to_doc") {
-        const { docId, content } = request.params.arguments;
-
-        await docs.documents.batchUpdate({
-          documentId: docId,
-          requestBody: {
-            requests: [
-              {
-                insertText: {
-                  text: content,
-                  endOfSegmentLocation: {},
-                },
-              },
-            ],
-          },
-        });
-
-        return {
-          content: [
-            {
-              type: "text",
-              text: "✅ Text appended successfully to document.",
-            },
-          ],
-        };
-      }
-
-      throw new Error(`Unknown tool: ${request.params.name}`);
-    });
-
-    // Connect transport to server
+    // Create server and connect
+    const mcp = createServer();
     await mcp.connect(transport);
     console.log(`✅ SSE established with session: ${sessionId}`);
 
