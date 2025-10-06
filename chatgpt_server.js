@@ -21,8 +21,12 @@ oauth2Client.setCredentials({ refresh_token: GOOGLE_REFRESH_TOKEN });
 const docs = google.docs({ version: "v1", auth: oauth2Client });
 
 const app = express();
+app.use(express.json());
 
-// ✅ Health check & OAuth configuration - ChatGPT checks root endpoint
+// Store transports by session ID
+const transports = {};
+
+// ✅ OAuth configuration endpoint - ChatGPT checks this first
 app.get("/", (req, res) => {
   res.json({
     name: "google-docs-writer",
@@ -40,67 +44,135 @@ app.get("/", (req, res) => {
   });
 });
 
-// ✅ SSE endpoint for the actual MCP connection
+// ✅ SSE endpoint - establishes the stream
 app.get("/sse", async (req, res) => {
-  const mcp = new Server(
-    { name: "google-docs-writer", version: "1.0.0" },
-    { capabilities: { tools: {} } }
-  );
+  console.log("📡 Establishing SSE connection");
 
-  // Define tool handlers
-  mcp.setRequestHandler("tools/list", async () => ({
-    tools: [
-      {
-        name: "append_text_to_doc",
-        description: "Append text to a Google Doc",
-        inputSchema: {
-          type: "object",
-          properties: {
-            docId: { type: "string", description: "The Google Doc ID" },
-            content: { type: "string", description: "The text to append" },
+  try {
+    // Create transport with POST endpoint
+    const transport = new SSEServerTransport("/messages", res);
+    const sessionId = transport.sessionId;
+
+    // Store transport
+    transports[sessionId] = transport;
+
+    // Cleanup on close
+    transport.onclose = () => {
+      console.log(`🔌 SSE closed for session ${sessionId}`);
+      delete transports[sessionId];
+    };
+
+    // Create MCP server instance
+    const mcp = new Server(
+      { name: "google-docs-writer", version: "1.0.0" },
+      { capabilities: { tools: {} } }
+    );
+
+    // Register tool handlers
+    mcp.setRequestHandler("tools/list", async () => ({
+      tools: [
+        {
+          name: "append_text_to_doc",
+          description: "Append text to a Google Doc",
+          inputSchema: {
+            type: "object",
+            properties: {
+              docId: { type: "string", description: "The Google Doc ID" },
+              content: { type: "string", description: "The text to append" },
+            },
+            required: ["docId", "content"],
           },
-          required: ["docId", "content"],
         },
-      },
-    ],
-  }));
+      ],
+    }));
 
-  mcp.setRequestHandler("tools/call", async (request) => {
-    if (request.params.name === "append_text_to_doc") {
-      const { docId, content } = request.params.arguments;
+    mcp.setRequestHandler("tools/call", async (request) => {
+      if (request.params.name === "append_text_to_doc") {
+        const { docId, content } = request.params.arguments;
 
-      await docs.documents.batchUpdate({
-        documentId: docId,
-        requestBody: {
-          requests: [
-            {
-              insertText: {
-                text: content,
-                endOfSegmentLocation: {},
+        await docs.documents.batchUpdate({
+          documentId: docId,
+          requestBody: {
+            requests: [
+              {
+                insertText: {
+                  text: content,
+                  endOfSegmentLocation: {},
+                },
               },
+            ],
+          },
+        });
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: "✅ Text appended successfully to document.",
             },
           ],
-        },
-      });
+        };
+      }
 
-      return {
-        content: [
-          {
-            type: "text",
-            text: "✅ Text appended successfully to document.",
-          },
-        ],
-      };
+      throw new Error(`Unknown tool: ${request.params.name}`);
+    });
+
+    // Connect transport to server
+    await mcp.connect(transport);
+    console.log(`✅ SSE established with session: ${sessionId}`);
+
+  } catch (error) {
+    console.error("❌ Error establishing SSE:", error);
+    if (!res.headersSent) {
+      res.status(500).send("Error establishing SSE stream");
     }
+  }
+});
 
-    throw new Error(`Unknown tool: ${request.params.name}`);
-  });
+// ✅ POST endpoint - receives client messages
+app.post("/messages", async (req, res) => {
+  console.log("📨 Received message");
 
-  const transport = new SSEServerTransport({ res });
-  await mcp.connect(transport);
+  const sessionId = req.query.sessionId;
+
+  if (!sessionId) {
+    console.error("❌ No sessionId in request");
+    res.status(400).send("Missing sessionId parameter");
+    return;
+  }
+
+  const transport = transports[sessionId];
+
+  if (!transport) {
+    console.error(`❌ No transport for session: ${sessionId}`);
+    res.status(404).send("Session not found");
+    return;
+  }
+
+  try {
+    await transport.handlePostMessage(req, res, req.body);
+  } catch (error) {
+    console.error("❌ Error handling message:", error);
+    if (!res.headersSent) {
+      res.status(500).send("Error handling request");
+    }
+  }
 });
 
 app.listen(PORT, () => {
   console.log(`🚀 MCP Proxy running on http://localhost:${PORT}/sse`);
 });
 
+// Graceful shutdown
+process.on('SIGINT', async () => {
+  console.log('Shutting down...');
+  for (const sessionId in transports) {
+    try {
+      await transports[sessionId].close();
+      delete transports[sessionId];
+    } catch (error) {
+      console.error(`Error closing session ${sessionId}:`, error);
+    }
+  }
+  process.exit(0);
+});
