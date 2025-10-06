@@ -22,41 +22,20 @@ const docs = google.docs({ version: "v1", auth: oauth2Client });
 
 const app = express();
 
-// ✅ Health check
+// ✅ Health check & OAuth configuration - ChatGPT checks root endpoint
 app.get("/", (req, res) => {
-  res.send("✅ MCP Proxy is running and ready!");
-});
-
-// ✅ Capabilities endpoint – ChatGPT fetches this before SSE
-app.get("/capabilities", (req, res) => {
   res.json({
     name: "google-docs-writer",
     version: "1.0.0",
-    capabilities: {
-      authentication: {
-        methods: ["oauth"],
-        oauth: {
-          authorization_url: "https://accounts.google.com/o/oauth2/v2/auth",
-          token_url: "https://oauth2.googleapis.com/token",
-          scopes: [
-            "https://www.googleapis.com/auth/documents",
-            "https://www.googleapis.com/auth/drive.file",
-          ],
-        },
-      },
-      tools: {
-        append_text_to_doc: {
-          description: "Append text to a Google Doc",
-          inputSchema: {
-            type: "object",
-            properties: {
-              docId: { type: "string", description: "The Google Doc ID" },
-              content: { type: "string", description: "The text to append" },
-            },
-            required: ["docId", "content"],
-          },
-        },
-      },
+    authentication: {
+      type: "oauth",
+      authorization_url: "https://accounts.google.com/o/oauth2/v2/auth",
+      token_url: "https://oauth2.googleapis.com/token",
+      client_id: GOOGLE_CLIENT_ID,
+      scopes: [
+        "https://www.googleapis.com/auth/documents",
+        "https://www.googleapis.com/auth/drive.file",
+      ],
     },
   });
 });
@@ -65,53 +44,59 @@ app.get("/capabilities", (req, res) => {
 app.get("/sse", (req, res) => {
   const mcp = new Server(
     { name: "google-docs-writer", version: "1.0.0" },
-    {
-      capabilities: {
-        authentication: {
-          methods: ["oauth"],
-          oauth: {
-            authorization_url: "https://accounts.google.com/o/oauth2/v2/auth",
-            token_url: "https://oauth2.googleapis.com/token",
-            scopes: [
-              "https://www.googleapis.com/auth/documents",
-              "https://www.googleapis.com/auth/drive.file",
-            ],
-          },
-        },
-        tools: {
-          append_text_to_doc: {
-            description: "Append text to a Google Doc",
-            inputSchema: {
-              type: "object",
-              properties: {
-                docId: { type: "string", description: "The Google Doc ID" },
-                content: { type: "string", description: "The text to append" },
-              },
-              required: ["docId", "content"],
-            },
-            async execute({ docId, content }) {
-              await docs.documents.batchUpdate({
-                documentId: docId,
-                requestBody: {
-                  requests: [
-                    {
-                      insertText: {
-                        text: content,
-                        endOfSegmentLocation: {},
-                      },
-                    },
-                  ],
-                },
-              });
-              return { ok: true, message: "✅ Text appended successfully." };
-            },
-          },
-        },
-      },
-    }
+    { capabilities: { tools: {} } }
   );
 
-  const transport = new SSEServerTransport({ req, res });
+  // Define tool handlers
+  mcp.setRequestHandler("tools/list", async () => ({
+    tools: [
+      {
+        name: "append_text_to_doc",
+        description: "Append text to a Google Doc",
+        inputSchema: {
+          type: "object",
+          properties: {
+            docId: { type: "string", description: "The Google Doc ID" },
+            content: { type: "string", description: "The text to append" },
+          },
+          required: ["docId", "content"],
+        },
+      },
+    ],
+  }));
+
+  mcp.setRequestHandler("tools/call", async (request) => {
+    if (request.params.name === "append_text_to_doc") {
+      const { docId, content } = request.params.arguments;
+
+      await docs.documents.batchUpdate({
+        documentId: docId,
+        requestBody: {
+          requests: [
+            {
+              insertText: {
+                text: content,
+                endOfSegmentLocation: {},
+              },
+            },
+          ],
+        },
+      });
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: "✅ Text appended successfully to document.",
+          },
+        ],
+      };
+    }
+
+    throw new Error(`Unknown tool: ${request.params.name}`);
+  });
+
+  const transport = new SSEServerTransport("/sse", res);
   mcp.connect(transport);
 });
 
